@@ -16,9 +16,10 @@
 
     <script type="module">
         import { chunkText } from '../assets/js/chunk.js';
-        import { gradeExam } from '../assets/js/exam.js';
-        import { calculateNextReview, getAdaptiveRecommendations, identifyWeakTopics } from '../assets/js/progress.js';
+        import { generateExamForModule, gradeExam } from '../assets/js/exam.js';
+        import { calculateNextReview, getAdaptiveRecommendations, identifyWeakTopics, isModuleUnlocked } from '../assets/js/progress.js';
         import { callGeminiAPI } from '../assets/js/ai.js';
+        import { normalizeStudyRoute } from '../assets/js/route.js';
 
         const resultsContainer = document.getElementById('test-results');
         const tests = [];
@@ -69,6 +70,16 @@
             assert("exam.js: Cálculo de puntaje parcial y corrección objetiva", result.correctCount === 1 && result.scorePercentage === 50);
             const emptyResult = await gradeExam([], {});
             assert("exam.js: Examen vacío devuelve puntaje válido", emptyResult.scorePercentage === 0);
+            const blankShortAnswer = await gradeExam(
+                [{ id: 'short', type: 'short_answer', statement: 'Define el concepto', correctAnswer: 'energía' }],
+                { short: '' }
+            );
+            assert("exam.js: Una respuesta corta vacía no se califica como correcta", blankShortAnswer.scorePercentage === 0);
+            const partialShortAnswer = await gradeExam(
+                [{ id: 'short', type: 'short_answer', statement: 'Define el concepto', correctAnswer: 'agua' }],
+                { short: 'a' }
+            );
+            assert("exam.js: Una coincidencia parcial mínima no se califica como correcta", partialShortAnswer.scorePercentage === 0);
           } catch (e) {
             assert("exam.js: Excepción en pruebas", false);
           }
@@ -100,6 +111,93 @@
                 { essay: 'Respuesta del estudiante' }
             );
             assert("exam.js: Conserva el puntaje parcial de respuestas abiertas", essayResult.scorePercentage === 80 && essayResult.correctCount === 1);
+            globalThis.fetch = async () => { throw new Error('Servicio de evaluación no disponible'); };
+            const failedEssayGrading = await gradeExam(
+                [{ id: 'essay', type: 'essay', statement: 'Explica el concepto', correctAnswer: 'Criterio esperado' }],
+                { essay: 'Respuesta del estudiante' }
+            );
+            assert("exam.js: No otorga puntos cuando falla la evaluación de desarrollo", failedEssayGrading.scorePercentage === 0);
+
+            globalThis.fetch = async () => ({
+                ok: true,
+                json: async () => ({
+                    candidates: [{
+                        content: {
+                            parts: [{
+                                text: JSON.stringify({
+                                    questions: [
+                                        { id: 'q1', type: 'true_false', statement: 'Afirmación', correctAnswer: 'Verdadero' },
+                                        { id: 'q1', type: 'multiple_choice', statement: 'Elección', options: ['A', 'B'], correctAnswer: 'A' }
+                                    ]
+                                })
+                            }]
+                        }
+                    }]
+                })
+            });
+            const generatedExam = await generateExamForModule({ title: 'Prueba', summary: 'Contenido', concepts: [] });
+            assert("exam.js: Completa opciones de verdadero/falso y evita IDs duplicados", generatedExam.questions[0].options.length === 2 && generatedExam.questions[1].id !== generatedExam.questions[0].id);
+
+            globalThis.fetch = async () => { throw new Error('Servicio de IA no disponible'); };
+            const materialExam = await generateExamForModule({
+                title: 'Módulo de prueba',
+                summary: 'Contenido del tema',
+                concepts: [],
+                flashcards: [
+                    { question: '¿Qué es una sección?', answer: 'Un bloque temático del documento.' },
+                    { question: '¿Qué es una etiqueta?', answer: 'Un elemento semántico del HTML.' }
+                ]
+            });
+            const materialExamCorrectAnswers = Object.fromEntries(
+                materialExam.questions.map(question => [question.id, question.correctAnswer])
+            );
+            const materialExamResult = await gradeExam(materialExam.questions, materialExamCorrectAnswers);
+            assert("exam.js: Genera un examen de opción múltiple con tarjetas cuando Gemini falla", materialExam.source === 'module' && materialExam.questions.length === 2 && materialExam.questions.every(question => question.type === 'multiple_choice' && question.options.length === new Set(question.options).size && question.options.includes(question.correctAnswer)) && materialExamResult.scorePercentage === 100);
+
+            const tenFactExam = await generateExamForModule({
+                title: 'Módulo con diez temas',
+                summary: 'Contenido del módulo.',
+                concepts: [],
+                flashcards: Array.from({ length: 10 }, (_, index) => ({
+                    question: `Pregunta ${index + 1}`,
+                    answer: `Respuesta distinta del tema ${index + 1}`
+                }))
+            });
+            const sevenCorrectAnswers = Object.fromEntries(
+                tenFactExam.questions.map((question, index) => [
+                    question.id,
+                    index < 7 ? question.correctAnswer : question.options.find(option => option !== question.correctAnswer)
+                ])
+            );
+            const passingResult = await gradeExam(tenFactExam.questions, sevenCorrectAnswers);
+            assert("exam.js: Permite evaluar un aprobado exacto de 70%", tenFactExam.questions.length === 10 && passingResult.scorePercentage === 70);
+            const routeModules = [{ id: 'm1', title: 'Primero' }, { id: 'm2', title: 'Segundo' }];
+            assert("progress.js: Desbloquea el módulo 2 al aprobar el examen con 70%", isModuleUnlocked(routeModules, [{ moduleId: 'm1', scorePercentage: passingResult.scorePercentage }], 1));
+            const failingResult = await gradeExam(tenFactExam.questions, Object.fromEntries(
+                tenFactExam.questions.map((question, index) => [
+                    question.id,
+                    index < 6 ? question.correctAnswer : question.options.find(option => option !== question.correctAnswer)
+                ])
+            ));
+            assert("progress.js: Mantiene bloqueado el módulo 2 con menos de 70%", failingResult.scorePercentage === 60 && !isModuleUnlocked(routeModules, [{ moduleId: 'm1', scorePercentage: failingResult.scorePercentage }], 1));
+
+            const noMaterialExamRejected = await generateExamForModule({
+                title: 'Módulo vacío',
+                summary: '',
+                concepts: [],
+                flashcards: []
+            }).then(() => false, () => true);
+            assert("exam.js: Informa cuando no hay IA ni contenido para un examen", noMaterialExamRejected);
+            const oneFactExam = await generateExamForModule({
+                title: 'Módulo con un solo concepto',
+                summary: '',
+                concepts: [],
+                flashcards: [{ question: '¿Qué es una sección?', answer: 'Un bloque temático del documento.' }]
+            });
+            const oneFactResult = await gradeExam(oneFactExam.questions, {
+                [oneFactExam.questions[0].id]: 'Es un bloque temático del documento'
+            });
+            assert("exam.js: Usa respuesta escrita cuando no hay distractores suficientes", oneFactExam.questions[0].type === 'short_answer' && oneFactResult.scorePercentage === 100);
           } catch (e) {
             assert("ai.js / exam.js: Excepción en pruebas", false);
           } finally {
@@ -130,8 +228,45 @@
                 }]
             );
             assert("progress.js: Prioriza módulos con resultados bajos", recommendations.length === 1 && recommendations[0].moduleTitle === 'Biología');
+
+            const modules = [{ id: 'm1', title: 'Fundamentos' }, { id: 'm2', title: 'Aplicación' }, { id: 'm3', title: 'Repaso' }];
+            assert("progress.js: Solo el primer módulo inicia desbloqueado", isModuleUnlocked(modules, [], 0) && !isModuleUnlocked(modules, [], 1));
+            const passedFirst = [{ moduleId: 'm1', scorePercentage: 70 }];
+            assert("progress.js: Aprobar con 70% desbloquea el módulo siguiente", isModuleUnlocked(modules, passedFirst, 1));
+            assert("progress.js: Cada módulo anterior debe estar aprobado", !isModuleUnlocked(modules, passedFirst, 2));
+            assert("progress.js: Un resultado reprobado no desbloquea", !isModuleUnlocked(modules, [{ moduleId: 'm1', scorePercentage: 69.9 }], 1));
           } catch (e) {
             assert("progress.js: Excepción en pruebas", false);
+          }
+
+          // 5. Normalización de lecciones estructuradas y material de estudio
+          try {
+            const route = normalizeStudyRoute({
+                title: 'Ruta de prueba',
+                modules: [{
+                    id: 'm1',
+                    title: 'Conceptos base',
+                    summary: 'La célula es la unidad básica de los seres vivos. Está formada por componentes.',
+                    concepts: [{ term: 'Célula', definition: 'Unidad básica de los seres vivos.' }]
+                }, {
+                    id: 'm2',
+                    title: 'Aplicación',
+                    summary: 'Los conceptos se aplican al análisis de los organismos.'
+                }]
+            }, {});
+            assert("route.js: Genera diapositivas y tarjetas cuando faltan en la respuesta", route.modules.every(module => module.lessonSlides.length >= 3 && module.flashcards.length >= 3));
+            assert("route.js: Asocia las tarjetas al módulo correspondiente", route.flashcards.every(card => route.modules.some(module => module.id === card.moduleId)));
+            const migratedRoute = normalizeStudyRoute({
+                title: 'Ruta anterior',
+                modules: [{ id: 'legacy', title: 'Módulo previo', summary: 'Contenido existente de una ruta guardada.' }]
+            }, {}, {
+                id: 'route_existing',
+                createdAt: '2025-01-01',
+                progress: { completedModules: ['legacy'], examResults: [{ moduleId: 'legacy', scorePercentage: 80 }] }
+            });
+            assert("route.js: Conserva el progreso al estructurar rutas guardadas", migratedRoute.id === 'route_existing' && migratedRoute.progress.examResults.length === 1 && migratedRoute.progress.completedModules[0] === 'legacy');
+          } catch (e) {
+            assert("route.js: Excepción en pruebas", false);
           }
 
           resultsContainer.innerHTML = `<ul>${tests.map(({ testName, passed }) =>

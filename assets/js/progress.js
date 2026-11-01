@@ -2,6 +2,26 @@
  * progress.js - Métricas, repetición espaciada y cálculo de temas débiles
  */
 
+export const MODULE_PASSING_SCORE = 70;
+
+function resultMatchesModule(result, module) {
+    if (result.moduleId && module.id) return result.moduleId === module.id;
+    return result.moduleTitle === module.title;
+}
+
+export function isModuleUnlocked(modules, examResults, moduleIndex) {
+    if (moduleIndex <= 0) return true;
+    if (moduleIndex >= modules.length) return false;
+
+    return modules.slice(0, moduleIndex).every(module =>
+        (examResults || []).some(result =>
+            resultMatchesModule(result, module) &&
+            typeof result.scorePercentage === 'number' &&
+            result.scorePercentage >= MODULE_PASSING_SCORE
+        )
+    );
+}
+
 // Algoritmo Leitner simple para flashcards
 export function calculateNextReview(cardId, currentBox = 1, isCorrect = true) {
     let nextBox = currentBox;

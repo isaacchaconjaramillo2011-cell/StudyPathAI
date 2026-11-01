@@ -4,10 +4,15 @@
 import { store } from './state.js';
 import { dbGetAll, dbSave, dbDelete, exportAllData, importAllData } from './storage.js';
 import { extractTextFromFile } from './extract.js';
-import { generateStudyRoute } from './route.js';
+import { generateStudyRoute, normalizeStudyRoute } from './route.js';
 import { generateExamForModule, gradeExam } from './exam.js';
 import { testApiConnection } from './ai.js';
-import { getAdaptiveRecommendations, identifyWeakTopics } from './progress.js';
+import {
+    getAdaptiveRecommendations,
+    identifyWeakTopics,
+    isModuleUnlocked,
+    MODULE_PASSING_SCORE
+} from './progress.js';
 
 // Inicialización de la aplicación
 document.addEventListener('DOMContentLoaded', async () => {
@@ -49,7 +54,22 @@ function setupNavigation() {
 async function loadInitialData() {
     try {
         const materials = await dbGetAll('materials');
-        const routes = await dbGetAll('routes');
+        const savedRoutes = await dbGetAll('routes');
+        const routes = [];
+        for (const route of savedRoutes) {
+            const needsStructuredLessons = Array.isArray(route.modules) &&
+                route.modules.some(module =>
+                    !module || !Array.isArray(module.lessonSlides) || module.lessonSlides.length < 3 ||
+                    !Array.isArray(module.flashcards) || module.flashcards.length < 3
+                );
+            if (needsStructuredLessons) {
+                const normalizedRoute = normalizeStudyRoute(route, route.options, route);
+                await dbSave('routes', normalizedRoute);
+                routes.push(normalizedRoute);
+            } else {
+                routes.push(route);
+            }
+        }
         store.set({ materials, routes });
     } catch (e) {
         showToast('Error al cargar datos locales: ' + e.message, 'error');
@@ -282,6 +302,14 @@ function renderRoutesView() {
     const adaptiveRecommendations = active
         ? getAdaptiveRecommendations(active.modules, active.progress?.examResults || [])
         : [];
+    const examResults = active?.progress?.examResults || [];
+    const passedModules = active
+        ? active.modules.filter((module, index) => isModuleUnlocked(active.modules, examResults, index) &&
+            examResults.some(result =>
+                (result.moduleId === module.id || result.moduleTitle === module.title) &&
+                result.scorePercentage >= MODULE_PASSING_SCORE
+            )).length
+        : 0;
 
     return `
         <div class="view-section">
@@ -294,8 +322,21 @@ function renderRoutesView() {
             </div>
             ${!active ? '<div class="card"><p class="text-muted">No tienes ninguna ruta seleccionada o creada. Ve a "Crear Ruta".</p></div>' : `
                 <div class="card">
-                    <h3>${escapeHtml(active.title)}</h3>
-                    <p class="text-muted" style="margin-top: 0.5rem;">${escapeHtml(active.description)}</p>
+                    <div class="route-heading">
+                        <div>
+                            <p class="eyebrow">TU PLAN DE APRENDIZAJE</p>
+                            <h3>${escapeHtml(active.title)}</h3>
+                            <p class="text-muted" style="margin-top: 0.5rem;">${escapeHtml(active.description)}</p>
+                        </div>
+                        <div class="route-progress">
+                            <strong>${passedModules} / ${active.modules.length}</strong>
+                            <span>módulos aprobados</span>
+                        </div>
+                    </div>
+                    <div class="progress-track" role="progressbar" aria-label="Progreso de la ruta" aria-valuenow="${passedModules}" aria-valuemin="0" aria-valuemax="${active.modules.length}">
+                        <span style="width: ${active.modules.length ? (passedModules / active.modules.length) * 100 : 0}%"></span>
+                    </div>
+                    <p class="text-sm text-muted">Aprueba cada examen con ${MODULE_PASSING_SCORE}% o más para desbloquear el siguiente módulo.</p>
                     <hr style="margin: 1rem 0; border:0; border-top: 1px solid var(--border-color);">
                     ${active.progress?.examResults?.length ? `
                         <div class="card" style="border-left: 4px solid var(--warning-color); margin: 1rem 0;">
@@ -315,17 +356,41 @@ function renderRoutesView() {
                             ` : '<p class="text-muted" style="margin-top: 0.5rem;">Buen dominio de los módulos evaluados.</p>'}
                         </div>
                     ` : ''}
-                    <div style="display: flex; flex-direction: column; gap: 1rem;">
-                        ${active.modules.map((mod, index) => `
-                            <div class="card" style="border-left: 4px solid var(--primary-color);">
-                                <h4>Módulo ${index + 1}: ${escapeHtml(mod.title)}</h4>
-                                <p class="text-sm text-muted" style="margin-top: 0.25rem;">Estimado: ${mod.estimatedHours} horas</p>
-                                <p style="margin-top: 0.5rem;">${escapeHtml(mod.summary)}</p>
-                                <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
-                                    <button class="btn btn-secondary start-exam-btn" data-mod-index="${index}">Realizar Examen del Módulo</button>
+                    <div class="module-list">
+                        ${active.modules.map((mod, index) => {
+                            const unlocked = isModuleUnlocked(active.modules, examResults, index);
+                            const bestScore = examResults
+                                .filter(result => result.moduleId && mod.id
+                                    ? result.moduleId === mod.id
+                                    : result.moduleTitle === mod.title)
+                                .reduce((best, result) => Math.max(best, Number(result.scorePercentage) || 0), 0);
+                            const passed = bestScore >= MODULE_PASSING_SCORE;
+                            const previousModule = active.modules[index - 1];
+                            return `
+                            <article class="module-card ${unlocked ? '' : 'is-locked'} ${passed ? 'is-passed' : ''}">
+                                <div class="module-number">${unlocked ? (passed ? '✓' : String(index + 1).padStart(2, '0')) : '🔒'}</div>
+                                <div class="module-content">
+                                    <div class="module-title-row">
+                                        <div>
+                                            <p class="eyebrow">MÓDULO ${index + 1}${mod.estimatedHours ? ` · ${mod.estimatedHours} H` : ''}</p>
+                                            <h4>${escapeHtml(mod.title)}</h4>
+                                        </div>
+                                        <span class="module-status ${passed ? 'status-passed' : unlocked ? 'status-open' : 'status-locked'}">
+                                            ${passed ? 'Aprobado' : unlocked ? 'Disponible' : 'Bloqueado'}
+                                        </span>
+                                    </div>
+                                    <p class="module-summary">${escapeHtml(mod.summary)}</p>
+                                    <p class="module-meta">${mod.lessonSlides?.length || 0} diapositivas <span>·</span> ${mod.flashcards?.length || 0} tarjetas</p>
+                                    ${!unlocked ? `<p class="locked-hint">Aprueba “${escapeHtml(previousModule.title)}” con ${MODULE_PASSING_SCORE}% para continuar.</p>` : ''}
+                                    ${unlocked ? `
+                                        <div class="module-actions">
+                                            <button class="btn btn-secondary open-lesson-btn" data-mod-index="${index}">📖 Estudiar lección</button>
+                                            <button class="btn start-exam-btn" data-mod-index="${index}">${passed ? '↻ Repetir examen' : '✎ Realizar examen'}</button>
+                                        </div>
+                                    ` : ''}
                                 </div>
-                            </div>
-                        `).join('')}
+                            </article>
+                        `}).join('')}
                     </div>
                 </div>
             `}
@@ -348,22 +413,234 @@ function setupRoutesEvents() {
 
     document.querySelectorAll('.start-exam-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
-            const modIndex = parseInt(e.target.getAttribute('data-mod-index'));
+            const button = e.currentTarget;
+            const originalText = button.textContent;
+            const modIndex = parseInt(button.getAttribute('data-mod-index'));
             const activeRoute = store.get().currentRoute;
+            const examResults = activeRoute.progress?.examResults || [];
+            if (!isModuleUnlocked(activeRoute.modules, examResults, modIndex)) {
+                showToast('Este módulo está bloqueado. Aprueba primero el examen anterior.', 'warning');
+                return;
+            }
             const mod = activeRoute.modules[modIndex];
 
-            showToast('Generando examen interactivo con IA...', 'success', 4000);
+            button.disabled = true;
+            button.textContent = '⏳ Preparando examen...';
+            showToast('Preparando el examen del módulo...', 'success', 12000);
             try {
-                const questions = await generateExamForModule(mod);
-                openExamModal(mod, questions);
+                const exam = await generateExamForModule(mod);
+                if (exam.source === 'module') {
+                    showToast('Gemini no está disponible. Se creó un examen con las tarjetas y el contenido de este módulo.', 'warning', 8000);
+                }
+                openExamModal(mod, exam.questions, exam.source);
             } catch (err) {
                 showToast('Error al generar examen: ' + err.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = originalText;
             }
+        });
+    });
+
+    document.querySelectorAll('.open-lesson-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const modIndex = Number(e.currentTarget.getAttribute('data-mod-index'));
+            const activeRoute = store.get().currentRoute;
+            if (!isModuleUnlocked(activeRoute.modules, activeRoute.progress?.examResults || [], modIndex)) {
+                showToast('Este módulo está bloqueado. Aprueba primero el examen anterior.', 'warning');
+                return;
+            }
+            openLessonModal(activeRoute.modules[modIndex], modIndex);
         });
     });
 }
 
-function openExamModal(mod, questions) {
+function openLessonModal(module, moduleIndex) {
+    const modal = document.getElementById('modal-container');
+    const pageScrollY = window.scrollY;
+    const html = document.documentElement;
+    const body = document.body;
+    const previousPageStyles = {
+        htmlOverflow: html.style.overflow,
+        bodyPosition: body.style.position,
+        bodyTop: body.style.top,
+        bodyLeft: body.style.left,
+        bodyRight: body.style.right,
+        bodyWidth: body.style.width,
+        bodyOverflow: body.style.overflow
+    };
+    const slides = module.lessonSlides?.length
+        ? module.lessonSlides
+        : [{
+            title: module.title,
+            content: module.summary,
+            keyPoints: module.objectives || []
+        }];
+    const legacyCards = (store.get().currentRoute?.flashcards || []).filter(card =>
+        card.moduleId === module.id || card.moduleIndex === moduleIndex ||
+        (!card.moduleId && card.moduleIndex === undefined && moduleIndex === 0)
+    );
+    const cards = module.flashcards?.length ? module.flashcards : legacyCards;
+    let slideIndex = 0;
+    let cardIndex = 0;
+    let cardRevealed = false;
+    let lessonClosed = false;
+
+    const closeLesson = () => {
+        if (lessonClosed) return;
+        lessonClosed = true;
+        modal.removeEventListener('click', closeOnBackdrop);
+        modal.classList.add('hidden');
+        html.style.overflow = previousPageStyles.htmlOverflow;
+        body.style.position = previousPageStyles.bodyPosition;
+        body.style.top = previousPageStyles.bodyTop;
+        body.style.left = previousPageStyles.bodyLeft;
+        body.style.right = previousPageStyles.bodyRight;
+        body.style.width = previousPageStyles.bodyWidth;
+        body.style.overflow = previousPageStyles.bodyOverflow;
+        window.scrollTo(0, pageScrollY);
+    };
+    const closeOnBackdrop = event => {
+        if (event.target === modal) closeLesson();
+    };
+
+    const updateLessonContent = () => {
+        const slide = slides[slideIndex];
+        const card = cards[cardIndex];
+        const slideSection = modal.querySelector('.lesson-slide');
+        const keyPoints = slide?.keyPoints || [];
+
+        modal.querySelector('.slide-count').textContent = `DIAPOSITIVA ${slideIndex + 1} DE ${slides.length}`;
+        slideSection.querySelector('h4').textContent = slide?.title || 'Lección';
+        slideSection.querySelector('.slide-content').textContent = slide?.content || module.summary;
+        const keyPointsContainer = slideSection.querySelector('.key-points');
+        if (keyPoints.length) {
+            keyPointsContainer.innerHTML = `
+                <h5>Ideas clave</h5>
+                <ul>${keyPoints.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+            `;
+            keyPointsContainer.classList.remove('hidden');
+        } else {
+            keyPointsContainer.classList.add('hidden');
+        }
+
+        modal.querySelectorAll('.slide-dots span').forEach((dot, index) => {
+            dot.classList.toggle('active', index === slideIndex);
+        });
+        document.getElementById('previous-slide-btn').disabled = slideIndex === 0;
+        document.getElementById('next-slide-btn').disabled = slideIndex === slides.length - 1;
+        modal.querySelector('.flashcard-heading .text-sm').textContent = cards.length
+            ? `${cardIndex + 1} / ${cards.length}`
+            : 'Sin tarjetas';
+        const flashcard = document.getElementById('flip-flashcard-btn');
+        if (card && flashcard) {
+            flashcard.classList.toggle('is-revealed', cardRevealed);
+            flashcard.setAttribute('aria-label', cardRevealed ? 'Ocultar respuesta' : 'Mostrar respuesta');
+            flashcard.querySelector('.flashcard-label').textContent = cardRevealed ? 'RESPUESTA' : 'PREGUNTA';
+            flashcard.querySelector('.flashcard-text').textContent = cardRevealed ? card.answer : card.question;
+            flashcard.querySelector('.flashcard-hint').textContent = cardRevealed
+                ? 'Pulsa para volver a la pregunta'
+                : 'Pulsa para revelar la respuesta';
+        }
+        document.getElementById('previous-card-btn')?.toggleAttribute('disabled', cardIndex === 0);
+        document.getElementById('next-card-btn')?.toggleAttribute('disabled', cardIndex === cards.length - 1);
+    };
+
+    const modalMarkup = `
+        <div class="modal-content lesson-modal">
+            <div class="lesson-heading">
+                <div>
+                    <p class="eyebrow">MÓDULO ${moduleIndex + 1} · LECCIÓN</p>
+                    <h3>${escapeHtml(module.title)}</h3>
+                </div>
+                <button type="button" class="icon-btn" id="close-lesson-btn" aria-label="Cerrar lección">✕</button>
+            </div>
+            <section class="lesson-slide" aria-live="polite">
+                <div class="slide-count"></div>
+                <h4></h4>
+                <p class="slide-content"></p>
+                <div class="key-points"></div>
+                ${module.sourceReference ? `<p class="source-note">Fuente: ${escapeHtml(module.sourceReference)}</p>` : ''}
+            </section>
+            <div class="slide-controls">
+                <button type="button" class="btn btn-secondary" id="previous-slide-btn">← Anterior</button>
+                <div class="slide-dots" aria-label="Progreso de diapositivas">
+                    ${slides.map((_, index) => `<span class="${index === slideIndex ? 'active' : ''}"></span>`).join('')}
+                </div>
+                <button type="button" class="btn" id="next-slide-btn">Siguiente →</button>
+            </div>
+            <section class="flashcard-section">
+                <div class="flashcard-heading">
+                    <div>
+                        <p class="eyebrow">REPASO ACTIVO</p>
+                        <h4>Tarjetas clave</h4>
+                    </div>
+                    <span class="text-sm text-muted"></span>
+                </div>
+                ${cards.length ? `
+                    <button type="button" class="flashcard" id="flip-flashcard-btn">
+                        <span class="flashcard-label"></span>
+                        <span class="flashcard-text"></span>
+                        <span class="flashcard-hint"></span>
+                    </button>
+                    <div class="flashcard-controls">
+                        <button type="button" class="btn btn-secondary" id="previous-card-btn">← Anterior</button>
+                        <button type="button" class="btn btn-secondary" id="next-card-btn">Siguiente tarjeta →</button>
+                    </div>
+                ` : '<p class="text-muted">No hay tarjetas para este módulo.</p>'}
+            </section>
+        </div>
+    `;
+
+    modal.classList.remove('hidden');
+    modal.innerHTML = modalMarkup;
+    html.style.overflow = 'hidden';
+    body.style.position = 'fixed';
+    body.style.top = `-${pageScrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+
+    document.getElementById('close-lesson-btn').addEventListener('click', closeLesson);
+    document.getElementById('previous-slide-btn').addEventListener('click', () => {
+        if (slideIndex > 0) {
+            slideIndex--;
+            updateLessonContent();
+        }
+    });
+    document.getElementById('next-slide-btn').addEventListener('click', () => {
+        if (slideIndex < slides.length - 1) {
+            slideIndex++;
+            updateLessonContent();
+        }
+    });
+    if (cards.length) {
+        document.getElementById('flip-flashcard-btn').addEventListener('click', () => {
+            cardRevealed = !cardRevealed;
+            updateLessonContent();
+        });
+        document.getElementById('previous-card-btn').addEventListener('click', () => {
+            if (cardIndex > 0) {
+                cardIndex--;
+                cardRevealed = false;
+                updateLessonContent();
+            }
+        });
+        document.getElementById('next-card-btn').addEventListener('click', () => {
+            if (cardIndex < cards.length - 1) {
+                cardIndex++;
+                cardRevealed = false;
+                updateLessonContent();
+            }
+        });
+    }
+
+    modal.addEventListener('click', closeOnBackdrop);
+    updateLessonContent();
+}
+
+function openExamModal(mod, questions, source = 'ai') {
     const modal = document.getElementById('modal-container');
     modal.classList.remove('hidden');
     
@@ -372,11 +649,12 @@ function openExamModal(mod, questions) {
     modal.innerHTML = `
         <div class="modal-content">
             <h3>Examen: ${escapeHtml(mod.title)}</h3>
+            ${source === 'module' ? '<p class="text-sm text-muted" style="margin-top: 0.5rem;">Examen creado a partir del contenido y las tarjetas de este módulo.</p>' : ''}
             <form id="exam-form" style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1.5rem;">
                 ${questions.map((q, idx) => `
                     <div class="form-group">
                         <label style="font-weight: 600;">${idx + 1}. ${escapeHtml(q.statement)}</label>
-                        ${q.type === 'multiple_choice' ? q.options.map(opt => `
+                        ${q.type === 'multiple_choice' || q.type === 'true_false' ? q.options.map(opt => `
                             <label style="font-weight: normal; display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
                                 <input type="radio" name="q_${q.id}" value="${escapeHtml(opt)}" required> ${escapeHtml(opt)}
                             </label>
@@ -408,7 +686,10 @@ function openExamModal(mod, questions) {
         showToast('Corrigiendo examen...', 'success');
         try {
             const result = await gradeExam(questions, userAnswers);
+            const passed = result.scorePercentage >= MODULE_PASSING_SCORE;
             const activeRoute = store.get().currentRoute;
+            const moduleIndex = activeRoute.modules.findIndex(module => module.id === mod.id);
+            const hasNextModule = moduleIndex >= 0 && moduleIndex < activeRoute.modules.length - 1;
             const updatedRoute = {
                 ...activeRoute,
                 progress: {
@@ -419,6 +700,7 @@ function openExamModal(mod, questions) {
                             completedAt: new Date().toISOString(),
                             moduleId: mod.id,
                             moduleTitle: mod.title,
+                            passed,
                             ...result
                         }
                     ]
@@ -429,8 +711,14 @@ function openExamModal(mod, questions) {
             store.set({ routes, currentRoute: updatedRoute });
             modal.innerHTML = `
                 <div class="modal-content">
-                    <h3>Resultados del Examen</h3>
+                    <p class="eyebrow">${passed ? (hasNextModule ? 'MÓDULO DESBLOQUEADO' : 'RUTA COMPLETADA') : 'SIGUE PRACTICANDO'}</p>
+                    <h3>${passed ? '¡Examen aprobado!' : 'Resultado del examen'}</h3>
                     <p style="font-size: 1.25rem; font-weight: bold; margin: 1rem 0;">Puntaje obtenido: ${result.scorePercentage.toFixed(1)}% (${result.correctCount}/${result.totalQuestions} correctas)</p>
+                    <p class="text-muted">${passed
+                        ? hasNextModule
+                            ? '¡Buen trabajo! Ya puedes continuar con el siguiente módulo.'
+                            : '¡Excelente! Has aprobado el último módulo y completado toda la ruta.'
+                        : `Necesitas ${MODULE_PASSING_SCORE}% para desbloquear el siguiente módulo. Repasa las tarjetas e inténtalo de nuevo.`}</p>
                     <div style="display: flex; flex-direction: column; gap: 1rem; max-height: 50vh; overflow-y: auto;">
                         ${result.details.map((d, i) => `
                             <div class="card" style="border-left: 4px solid ${d.isCorrect ? 'var(--success-color)' : 'var(--danger-color)'};">
@@ -447,6 +735,7 @@ function openExamModal(mod, questions) {
             `;
             document.getElementById('finish-exam-modal').addEventListener('click', () => {
                 modal.classList.add('hidden');
+                renderCurrentView();
             });
         } catch (err) {
             showToast('Error al calificar: ' + err.message, 'error');
