@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Test Runner - StudyPath AI</title>
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 800px; margin: 0 auto; background: #f8fafc; color: #1e293b; }
+        .test-pass { color: #16a34a; font-weight: bold; }
+        .test-fail { color: #dc2626; font-weight: bold; }
+        .card { background: #fff; border: 1px solid #e2e8f0; padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <h1>Resultados de Pruebas Unitarias - StudyPath AI</h1>
+    <div id="test-results" class="card">Ejecutando pruebas...</div>
+
+    <script type="module">
+        import { chunkText } from '../Css y Js/js/chunk.js';
+        import { gradeExam } from '../Css y Js/js/exam.js';
+        import { calculateNextReview, getAdaptiveRecommendations, identifyWeakTopics } from '../Css y Js/js/progress.js';
+        import { callGeminiAPI } from '../Css y Js/js/ai.js';
+
+        const resultsContainer = document.getElementById('test-results');
+        const tests = [];
+        let passed = 0;
+        let failed = 0;
+
+        function assert(testName, condition) {
+            tests.push({ testName, passed: Boolean(condition) });
+            if (condition) {
+                passed++;
+            } else {
+                failed++;
+            }
+        }
+
+        async function runTests() {
+          // 1. Pruebas para chunk.js
+          try {
+            const shortText = "Hola mundo";
+            const chunks1 = chunkText(shortText, 100, 10);
+            assert("chunk.js: Texto corto sin división", chunks1.length === 1 && chunks1[0].text === shortText);
+
+            const longText = "A".repeat(5000);
+            const chunks2 = chunkText(longText, 2000, 200);
+            assert("chunk.js: Troceado correcto con texto largo", chunks2.length > 1);
+
+            const emptyChunks = chunkText("", 1000, 100);
+            assert("chunk.js: Manejo de texto vacío", emptyChunks.length === 0);
+            let invalidOptionsRejected = false;
+            try {
+                chunkText("texto", 10, 10);
+            } catch (error) {
+                invalidOptionsRejected = error instanceof RangeError;
+            }
+            assert("chunk.js: Rechaza solapamiento inválido", invalidOptionsRejected);
+          } catch (e) {
+            assert("chunk.js: Excepción en pruebas", false);
+          }
+
+          // 2. Pruebas para exam.js
+          try {
+            const questions = [
+                { id: '1', type: 'multiple_choice', statement: '¿2+2?', correctAnswer: '4' },
+                { id: '2', type: 'true_false', statement: '¿El agua moja?', correctAnswer: 'Verdadero' }
+            ];
+            const userAnswers = { '1': '4', '2': 'Falso' };
+            const result = await gradeExam(questions, userAnswers);
+            assert("exam.js: Cálculo de puntaje parcial y corrección objetiva", result.correctCount === 1 && result.scorePercentage === 50);
+            const emptyResult = await gradeExam([], {});
+            assert("exam.js: Examen vacío devuelve puntaje válido", emptyResult.scorePercentage === 0);
+          } catch (e) {
+            assert("exam.js: Excepción en pruebas", false);
+          }
+
+          // 3. Pruebas para ai.js y calificación parcial de respuestas abiertas
+          const originalFetch = globalThis.fetch;
+          const originalApiKey = localStorage.getItem('studypath_api_key');
+          try {
+            let requestBody;
+            localStorage.setItem('studypath_api_key', 'test-key');
+            globalThis.fetch = async (_url, options) => {
+                requestBody = JSON.parse(options.body);
+                return {
+                    ok: true,
+                    json: async () => ({
+                        candidates: [{ content: { parts: [{ text: '{"score":0.8,"feedback":"Buen trabajo."}' }] } }]
+                    })
+                };
+            };
+
+            await callGeminiAPI('prompt', [
+                { base64: 'image-one', mimeType: 'image/png' },
+                { base64: 'image-two', mimeType: 'image/jpeg' }
+            ]);
+            assert("ai.js: Envía todas las imágenes adjuntas", requestBody.contents[0].parts.length === 3);
+
+            const essayResult = await gradeExam(
+                [{ id: 'essay', type: 'essay', statement: 'Explica el concepto', correctAnswer: 'Criterio esperado' }],
+                { essay: 'Respuesta del estudiante' }
+            );
+            assert("exam.js: Conserva el puntaje parcial de respuestas abiertas", essayResult.scorePercentage === 80 && essayResult.correctCount === 1);
+          } catch (e) {
+            assert("ai.js / exam.js: Excepción en pruebas", false);
+          } finally {
+            globalThis.fetch = originalFetch;
+            if (originalApiKey === null) {
+                localStorage.removeItem('studypath_api_key');
+            } else {
+                localStorage.setItem('studypath_api_key', originalApiKey);
+            }
+          }
+
+          // 4. Pruebas para progress.js
+          try {
+            const review = calculateNextReview('card_1', 1, true);
+            assert("progress.js: Algoritmo Leitner avanza de caja correctamente", review.box === 2);
+
+            const weak = identifyWeakTopics([
+                { details: [{ statement: 'Termodinámica avanzada...', isCorrect: false }] },
+                { details: [{ statement: 'Termodinámica avanzada...', isCorrect: false }] }
+            ]);
+            assert("progress.js: Identificación correcta de temas débiles", weak.length === 1 && weak[0].failCount === 2);
+            const recommendations = getAdaptiveRecommendations(
+                [{ id: 'mod1', title: 'Biología' }],
+                [{
+                    moduleId: 'mod1',
+                    scorePercentage: 70,
+                    details: [{ statement: 'Fotosíntesis', isCorrect: false }]
+                }]
+            );
+            assert("progress.js: Prioriza módulos con resultados bajos", recommendations.length === 1 && recommendations[0].moduleTitle === 'Biología');
+          } catch (e) {
+            assert("progress.js: Excepción en pruebas", false);
+          }
+
+          resultsContainer.innerHTML = `<ul>${tests.map(({ testName, passed }) =>
+              `<li class="${passed ? 'test-pass' : 'test-fail'}">${passed ? '✔ PASÓ' : '✖ FALLÓ'}: ${testName}</li>`
+          ).join('')}</ul><p><strong>Resumen:</strong> ${passed} pasadas, ${failed} falladas.</p>`;
+        }
+
+        runTests();
+    </script>
+</body>
+</html>

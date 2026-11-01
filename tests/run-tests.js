@@ -1,0 +1,1 @@
+console.log("La suite automatizada está en tests/test-runner.html; ejecútala en un navegador.");
