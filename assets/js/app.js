@@ -66,10 +66,6 @@ function renderCurrentView() {
 
     container.innerHTML = '';
     switch (currentView) {
-        case 'library':
-            container.innerHTML = renderLibraryView();
-            setupLibraryEvents();
-            break;
         case 'generator':
             container.innerHTML = renderGeneratorView();
             setupGeneratorEvents();
@@ -86,76 +82,101 @@ function renderCurrentView() {
             setupSettingsEvents();
             break;
         default:
-            container.innerHTML = '<p>Vista no encontrada</p>';
+            container.innerHTML = renderGeneratorView();
+            setupGeneratorEvents();
     }
 }
 
-// --- VISTA 1: BIBLIOTECA ---
-function renderLibraryView() {
+// --- VISTA PRINCIPAL INTUITIVA (CREAR RUTA Y ARCHIVOS) ---
+function renderGeneratorView() {
     const { materials } = store.get();
+    const readyMaterials = materials.filter(m => m.status === 'ready');
+
     return `
         <div class="view-section">
-            <div class="view-header">
-                <h2>Biblioteca de Materiales</h2>
-                <label class="btn cursor-pointer">
-                    + Subir Archivos
-                    <input type="file" id="file-upload-input" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp" class="hidden">
-                </label>
+            <div class="view-header" style="text-align: center; margin-bottom: 1.5rem;">
+                <h2>StudyPath AI</h2>
+                <p class="text-muted">Sube tus materiales de estudio y genera tu ruta de aprendizaje en un solo clic.</p>
             </div>
-            <div class="dropzone" id="dropzone">
-                <p>📂 Arrastra tus archivos aquí o haz clic para seleccionarlos</p>
-                <p class="text-sm text-muted">Soporta PDF, DOCX, TXT, Markdown e imágenes (PNG, JPG, WebP)</p>
-            </div>
-            <div class="card table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Nombre</th>
-                            <th>Tipo / Páginas</th>
-                            <th>Estado</th>
-                            <th>Acciones</th>
-                        </tr>
-                    </thead>
-                    <tbody id="materials-table-body">
-                        ${materials.length === 0 ? '<tr><td colspan="4" class="text-center text-muted">No hay materiales subidos aún.</td></tr>' : 
-                          materials.map(m => `
-                            <tr>
-                                <td>${escapeHtml(m.name)}</td>
-                                <td>${escapeHtml(m.pagesOrWords)}</td>
-                                <td><span class="status-badge status-${m.status}">${m.status}</span></td>
-                                <td>
-                                    <button class="btn btn-secondary btn-sm delete-material" data-id="${m.id}">Eliminar</button>
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
+
+            <div class="card" style="max-width: 750px; margin: 0 auto;">
+                <!-- Zona de carga intuitiva -->
+                <div class="dropzone" id="generator-dropzone">
+                    <p style="font-size: 1.1rem; font-weight: 600;">📁 Arrastra tus archivos aquí o haz clic para seleccionarlos</p>
+                    <p class="text-sm text-muted" style="margin-top: 0.5rem;">Soporta PDF, DOCX, TXT, Markdown e Imágenes</p>
+                    <input type="file" id="generator-file-input" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp" class="hidden">
+                </div>
+
+                <!-- Lista de archivos subidos -->
+                <div id="generator-file-list" style="margin: 1.5rem 0;">
+                    ${materials.length === 0 ? '<p class="text-muted text-center" style="font-style: italic;">Aún no has subido ningún material.</p>' : 
+                      materials.map(m => `
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-color); padding: 10px 14px; border-radius: var(--radius); margin-bottom: 0.5rem; border: 1px solid var(--border-color);">
+                            <span style="font-size: 0.9rem; font-weight: 500;">📄 ${escapeHtml(m.name)} <span class="text-muted">(${escapeHtml(m.pagesOrWords)})</span></span>
+                            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                <span class="status-badge status-${m.status}">${m.status === 'ready' ? 'Listo' : m.status}</span>
+                                <button class="btn btn-secondary btn-sm delete-material" data-id="${m.id}" style="padding: 2px 8px; font-size: 0.8rem;">✕</button>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <!-- Formulario dinámico que aparece solo si hay archivos listos -->
+                <form id="route-generator-form" style="margin-top: 1.5rem; display: ${readyMaterials.length > 0 ? 'block' : 'none'};">
+                    <div class="form-group">
+                        <label>¿Qué objetivo de estudio quieres lograr?</label>
+                        <input type="text" id="route-objective" placeholder="Ej: Aprobar el examen de física, dominar JavaScript..." required style="width: 100%;">
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                        <div class="form-group">
+                            <label>Nivel:</label>
+                            <select id="route-level" style="width: 100%;">
+                                <option value="principiante">Principiante</option>
+                                <option value="intermedio" selected>Intermedio</option>
+                                <option value="avanzado">Avanzado</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Horas semanales:</label>
+                            <input type="number" id="route-hours" value="5" min="1" max="40" style="width: 100%;">
+                        </div>
+                    </div>
+
+                    <!-- Botón intuitivo principal -->
+                    <button type="submit" id="start-path-btn" class="btn" style="width: 100%; margin-top: 1.5rem; padding: 0.875rem; font-size: 1.1rem; font-weight: bold; text-align: center;">
+                        🚀 Empezar ruta de estudio
+                    </button>
+                </form>
             </div>
         </div>
     `;
 }
 
-function setupLibraryEvents() {
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('file-upload-input');
+function setupGeneratorEvents() {
+    const dropzone = document.getElementById('generator-dropzone');
+    const fileInput = document.getElementById('generator-file-input');
+    const form = document.getElementById('route-generator-form');
 
-    dropzone.addEventListener('click', () => fileInput.click());
-    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-    dropzone.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        dropzone.classList.remove('dragover');
-        if (e.dataTransfer.files) {
-            await handleFilesUpload(e.dataTransfer.files);
-        }
-    });
+    if (dropzone && fileInput) {
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+        dropzone.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files) {
+                await handleFilesUpload(e.dataTransfer.files);
+            }
+        });
 
-    fileInput.addEventListener('change', async (e) => {
-        if (e.target.files) {
-            await handleFilesUpload(e.target.files);
-        }
-        fileInput.value = '';
-    });
+        fileInput.addEventListener('change', async (e) => {
+            if (e.target.files) {
+                await handleFilesUpload(e.target.files);
+            }
+            fileInput.value = '';
+        });
+    }
 
     document.querySelectorAll('.delete-material').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -164,8 +185,43 @@ function setupLibraryEvents() {
             const materials = await dbGetAll('materials');
             store.set({ materials });
             renderCurrentView();
-            showToast('Material eliminado correctamente.', 'success');
+            showToast('Material eliminado.', 'success');
         });
+    });
+
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const { materials } = store.get();
+        const readyMaterials = materials.filter(m => m.status === 'ready');
+
+        if (readyMaterials.length === 0) {
+            showToast('Sube al menos un material válido.', 'warning');
+            return;
+        }
+
+        const objective = document.getElementById('route-objective').value;
+        const level = document.getElementById('route-level').value;
+        const hoursPerWeek = parseInt(document.getElementById('route-hours').value) || 5;
+
+        const startBtn = document.getElementById('start-path-btn');
+        startBtn.textContent = '⏳ Creando tu ruta inteligente...';
+        startBtn.disabled = true;
+
+        showToast('Generando ruta de estudio con Gemini... Por favor espera.', 'success', 6000);
+
+        try {
+            const newRoute = await generateStudyRoute(readyMaterials, { objective, level, hoursPerWeek, language: 'Español' });
+            const routes = await dbGetAll('routes');
+            store.set({ routes, currentRoute: newRoute, currentView: 'routes' });
+            renderCurrentView();
+            showToast('¡Ruta de estudio generada con éxito!', 'success');
+        } catch (error) {
+            startBtn.textContent = '🚀 Empezar ruta de estudio';
+            startBtn.disabled = false;
+            showToast('Error al generar la ruta: ' + error.message, 'error', 8000);
+        }
     });
 }
 
@@ -197,8 +253,8 @@ async function handleFilesUpload(fileList) {
             }
             if (newMaterial.isScannedPdf) {
                 newMaterial.status = 'error';
-                newMaterial.pagesOrWords = `${extracted.pagesOrWords}: no se pudo extraer texto. Convierte el PDF a imágenes para analizarlo.`;
-                showToast(`El PDF "${file.name}" parece escaneado y no contiene texto extraíble.`, 'warning', 6000);
+                newMaterial.pagesOrWords = `${extracted.pagesOrWords}: sin texto extraíble.`;
+                showToast(`El PDF "${file.name}" parece escaneado.`, 'warning', 6000);
             } else {
                 newMaterial.status = 'ready';
             }
@@ -214,91 +270,7 @@ async function handleFilesUpload(fileList) {
     }
 }
 
-// --- VISTA 2: CREACIÓN DE RUTA ---
-function renderGeneratorView() {
-    const { materials } = store.get();
-    const readyMaterials = materials.filter(m => m.status === 'ready');
-
-    return `
-        <div class="view-section">
-            <div class="view-header">
-                <h2>Crear Ruta de Estudio con IA</h2>
-            </div>
-            <div class="card">
-                <form id="route-generator-form">
-                    <div class="form-group">
-                        <label>Selecciona Materiales de Estudio:</label>
-                        ${readyMaterials.length === 0 ? '<p class="text-muted">No hay materiales listos. Sube archivos en la Biblioteca primero.</p>' :
-                          readyMaterials.map(m => `
-                            <label style="display: flex; align-items: center; gap: 0.5rem; font-weight: normal; margin-top: 0.25rem;">
-                                <input type="checkbox" name="selected-materials" value="${m.id}" checked> ${escapeHtml(m.name)} (${m.pagesOrWords})
-                            </label>
-                        `).join('')}
-                    </div>
-                    <div class="form-group">
-                        <label>Objetivo de Estudio:</label>
-                        <input type="text" id="route-objective" placeholder="Ej: Aprobar el parcial de física, dominar programación asíncrona..." required>
-                    </div>
-                    <div class="form-group">
-                        <label>Nivel Actual:</label>
-                        <select id="route-level">
-                            <option value="principiante">Principiante</option>
-                            <option value="intermedio" selected>Intermedio</option>
-                            <option value="avanzado">Avanzado</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Horas Disponibles por Semana:</label>
-                        <input type="number" id="route-hours" value="5" min="1" max="40">
-                    </div>
-                    <div class="form-group">
-                        <label>Idioma de Salida:</label>
-                        <input type="text" id="route-language" value="Español">
-                    </div>
-                    <button type="submit" class="btn" ${readyMaterials.length === 0 ? 'disabled' : ''}>Generar Ruta con IA</button>
-                </form>
-            </div>
-        </div>
-    `;
-}
-
-function setupGeneratorEvents() {
-    const form = document.getElementById('route-generator-form');
-    if (!form) return;
-
-    form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const checkboxes = form.querySelectorAll('input[name="selected-materials"]:checked');
-        const selectedIds = Array.from(checkboxes).map(cb => cb.value);
-
-        if (selectedIds.length === 0) {
-            showToast('Selecciona al menos un material de estudio.', 'warning');
-            return;
-        }
-
-        const objective = document.getElementById('route-objective').value;
-        const level = document.getElementById('route-level').value;
-        const hoursPerWeek = parseInt(document.getElementById('route-hours').value) || 5;
-        const language = document.getElementById('route-language').value;
-
-        const allMaterials = store.get().materials;
-        const chosenMaterials = allMaterials.filter(m => selectedIds.includes(m.id));
-
-        showToast('Generando ruta de estudio con Gemini... Por favor espera.', 'success', 5000);
-
-        try {
-            const newRoute = await generateStudyRoute(chosenMaterials, { objective, level, hoursPerWeek, language });
-            const routes = await dbGetAll('routes');
-            store.set({ routes, currentRoute: newRoute, currentView: 'routes' });
-            renderCurrentView();
-            showToast('¡Ruta de estudio generada con éxito!', 'success');
-        } catch (error) {
-            showToast('Error al generar la ruta: ' + error.message, 'error', 8000);
-        }
-    });
-}
-
-// --- VISTA 3: MIS RUTAS ---
+// --- VISTA 2: MIS RUTAS ---
 function renderRoutesView() {
     const { routes, currentRoute } = store.get();
 
@@ -340,7 +312,7 @@ function renderRoutesView() {
                                         </li>
                                     `).join('')}
                                 </ul>
-                            ` : '<p class="text-muted" style="margin-top: 0.5rem;">Buen dominio de los módulos evaluados; puedes continuar con el orden original.</p>'}
+                            ` : '<p class="text-muted" style="margin-top: 0.5rem;">Buen dominio de los módulos evaluados.</p>'}
                         </div>
                     ` : ''}
                     <div style="display: flex; flex-direction: column; gap: 1rem;">
@@ -355,19 +327,6 @@ function renderRoutesView() {
                             </div>
                         `).join('')}
                     </div>
-                    ${active.flashcards?.length ? `
-                        <section style="margin-top: 1.5rem;">
-                            <h3>Tarjetas de repaso</h3>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: 0.75rem;">
-                                ${active.flashcards.map(card => `
-                                    <details class="card">
-                                        <summary style="cursor: pointer; font-weight: 600;">${escapeHtml(card.question)}</summary>
-                                        <p style="margin-top: 0.75rem;">${escapeHtml(card.answer)}</p>
-                                    </details>
-                                `).join('')}
-                            </div>
-                        </section>
-                    ` : ''}
                 </div>
             `}
         </div>
@@ -495,7 +454,7 @@ function openExamModal(mod, questions) {
     });
 }
 
-// --- VISTA 4: PROGRESO ---
+// --- VISTA 3: PROGRESO ---
 function renderProgressView() {
     const routes = store.get().routes;
     const examResults = routes.flatMap(route =>
@@ -515,7 +474,7 @@ function renderProgressView() {
                 <h2>Progreso y Métricas de Estudio</h2>
             </div>
             <div class="card">
-                <p class="text-muted">Resumen de tus exámenes realizados y temas que conviene repasar.</p>
+                <p class="text-muted">Resumen de tus exámenes realizados y temas a reforzar.</p>
                 <div style="margin-top: 1.5rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
                     <div class="card" style="text-align: center;">
                         <h3>${examResults.length}</h3>
@@ -527,21 +486,15 @@ function renderProgressView() {
                     </div>
                     <div class="card" style="text-align: center;">
                         <h3>${routes.length}</h3>
-                        <p class="text-sm text-muted">Rutas de estudio</p>
+                        <p class="text-sm text-muted">Rutas creadas</p>
                     </div>
                 </div>
-                <h3 style="margin-top: 1.5rem;">Temas por reforzar</h3>
-                ${weakTopics.length
-                    ? `<ul style="margin: 0.75rem 0 0 1.25rem;">${weakTopics.map(topic =>
-                        `<li>${escapeHtml(topic.topic)} (${topic.failCount} errores)</li>`
-                    ).join('')}</ul>`
-                    : '<p class="text-muted" style="margin-top: 0.5rem;">Aún no hay respuestas incorrectas registradas.</p>'}
             </div>
         </div>
     `;
 }
 
-// --- VISTA 5: AJUSTES ---
+// --- VISTA 4: AJUSTES ---
 function renderSettingsView() {
     const apiKey = localStorage.getItem('studypath_api_key') || '';
     const model = localStorage.getItem('studypath_model') || 'gemini-flash-latest';
@@ -549,12 +502,9 @@ function renderSettingsView() {
     return `
         <div class="view-section">
             <div class="view-header">
-                <h2>Ajustes de la Aplicación y Privacidad</h2>
+                <h2>Ajustes y Configuración</h2>
             </div>
             <div class="card">
-                <p class="text-sm text-muted" style="margin-bottom: 1.5rem;">
-                    🔒 <strong>Aviso de Privacidad:</strong> Todos tus archivos se procesan de forma local en tu navegador mediante IndexedDB. Ningún documento personal es enviado a servidores externos, salvo las peticiones estrictamente necesarias a la API de Google Gemini utilizando tu propia clave personal.
-                </p>
                 <form id="settings-form">
                     <div class="form-group">
                         <label>Google Gemini API Key:</label>
@@ -564,14 +514,10 @@ function renderSettingsView() {
                         <label>Modelo de Gemini:</label>
                         <input type="text" id="settings-model" value="${escapeHtml(model)}" required>
                     </div>
-                    <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+                    <div style="display: flex; gap: 1rem; margin-top: 1.5rem; flex-wrap: wrap;">
                         <button type="submit" class="btn">Guardar Ajustes</button>
                         <button type="button" id="test-connection-btn" class="btn btn-secondary">Probar Conexión</button>
-                        <button type="button" id="export-backup-btn" class="btn btn-secondary">Exportar Copia de Seguridad</button>
-                        <label class="btn btn-secondary cursor-pointer">
-                            Importar Copia
-                            <input type="file" id="import-backup-input" accept=".json" class="hidden">
-                        </label>
+                        <button type="button" id="export-backup-btn" class="btn btn-secondary">Exportar Datos</button>
                     </div>
                 </form>
             </div>
@@ -620,28 +566,10 @@ function setupSettingsEvents() {
             a.download = `studypath_backup_${new Date().toISOString().slice(0, 10)}.json`;
             a.click();
             URL.revokeObjectURL(url);
-            showToast('Copia de seguridad exportada con éxito.', 'success');
+            showToast('Copia exportada con éxito.', 'success');
         } catch (err) {
             showToast('Error al exportar: ' + err.message, 'error');
         }
-    });
-
-    document.getElementById('import-backup-input').addEventListener('change', async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            try {
-                await importAllData(event.target.result);
-                await loadInitialData();
-                renderCurrentView();
-                showToast('Datos importados correctamente.', 'success');
-            } catch (err) {
-                showToast('Error al importar: ' + err.message, 'error');
-            }
-        };
-        reader.readAsText(file);
     });
 }
 
